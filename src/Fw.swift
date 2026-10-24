@@ -19,10 +19,10 @@
 //
 // 2026-10-23 修订（版本语义对齐）—— 三个来源、三种含义，互不冒充：
 // a) 线缆固件（hpmdiagnose 0x49 行 bcdDevice）—— 真正可读的线缆版本（3.1.12 → 3.2.0）。
-//    线缆里的 USB 2.0 控制器的 bcdDevice，MacRumors 评论区实测方法；被动设备该行全 0。
+//    从已识别 A2363 的诊断记录读取 bcdDevice；无有效记录时不推断版本。
 // b) 电源口固件（IOKit "FW Version"，4 字节）—— HPM 电源口控制器内部固件，
 //    Apple 未公布编码格式（M5 Studio 00 14 31 00 / M5 Pro 00 82 20 00 / M5 Air 00 02 31 00，
-//    同机各口恒同值）→ 展示原始字节，配社区对照表（00 63 30 00 曾被对应到 3.1.12）。
+//    同机各口可同值）→ 仅展示原始字节，不推断线缆版本或更新状态。
 // c) AppleHPM 驱动版本（Info.plist，如 3.4.4）—— 驱动自身版本，辅助参考。
 
 import Foundation
@@ -273,14 +273,7 @@ enum Fw {
     // MARK: 电源口固件（AppleHPM 驱动，Apple Silicon 电源口管理，只读）
     // “FW Version”（4 字节）= HPM 电源口控制器内部固件。Apple 未公布编码格式：
     // 实测 M5 Studio 00 14 31 00、M5 Pro 00 82 20 00、M5 Air 00 02 31 00，同机各口恒同值，
-    // 各家 M5 机器互不相同 → 不猜语义版本，展示原始字节 + 社区对照表。
-
-    /// 社区对照表（原始 hex → 已知含义）。来自 2026-10 MacRumors 讨论串：
-    /// 00 63 30 00 对应 MagSafe 3 线缆固件 3.1.12（旧版）；
-    /// 若值已变（苹果 3 月推送更新），线缆侧应为 3.2.0+ —— 以 hpmdiagnose 渠道为准。
-    static let knownPortFw: [String: String] = [
-        "00633000": "00 63 30 00（社区对照 = 线缆固件 3.1.12 旧版）",
-    ]
+    // 各家 M5 机器互不相同 → 只展示原始字节，不推断线缆固件版本。
 
     /// AppleHPM.kext 驱动版本（语义化版本，如 3.4.4；读 Info.plist，不碰驱动）
     static func driverVersion() -> String? {
@@ -289,70 +282,76 @@ enum Fw {
         return dict["CFBundleShortVersionString"] as? String
     }
 
-    // MARK: 线缆固件（hpmdiagnose 0x49 行，只读）
-    // 智能线缆（MagSafe 3 带 USB 2.0 控制器）会在自己的 HPM 块里填 0x49 行：
-    // 社区实测偏移 —— bcdDevice 在第 8–10 字节（03 11 12 → 3.1.12），PID 在 11–12。
-    // 被动设备（hub / 硬盘 / 未插）该行全 0 → 跳过。工具 = 系统自带 /usr/bin/hpmdiagnose。
-
-    /// 从 0x49 行字节里按社区实测偏移（bcdDevice 在第 8–10 字节）解码版本。
-    /// 严格偏移（不做全窗口扫描：0x49 行前部是状态字节，如 0x44 00 00，全扫会误报）。
-    /// 返回 (版本串, bcd hex)；偏移处非合法 BCD（全 0 / nibble > 9）→ nil。
-    static func bcdFromLine(_ bytes: [UInt8]) -> (String, String)? {
-        guard bytes.count > 10 else { return nil }
-        let w = [bytes[8], bytes[9], bytes[10]]
-        guard w[0] != 0 else { return nil }
-        for b in w { if b >> 4 > 9 || b & 0xF > 9 { return nil } }
-        let v = "\(w[0] >> 4).\(w[0] & 0xF).\(w[1] >> 4).\(w[1] & 0xF).\(w[2] >> 4).\(w[2] & 0xF)"
-        let hex = w.map { String(format: "%02x", $0) }.joined()
-        return (v, hex)
+    /// 仅读取 MagSafe 端口连接状态，不依赖可能残留的 hpmdiagnose 记录。
+    static func isCableConnected() -> Bool {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault,
+                IOServiceMatching("AppleHPMInterfaceType11"), &iterator) == kIOReturnSuccess else { return false }
+        defer { IOObjectRelease(iterator) }
+        while true {
+            let entry = IOIteratorNext(iterator)
+            guard entry != 0 else { break }
+            defer { IOObjectRelease(entry) }
+            let active = IORegistryEntryCreateCFProperty(entry, "ConnectionActive" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+            if active as? Bool == true { return true }
+        }
+        return false
     }
 
-    /// 所有“线缆固件”来源（channel = "CableFW"）。
-    /// 空数组 = 本机没有任何智能线缆（0x49 全 0）；调用方自行提示。
+    // MARK: 线缆固件（hpmdiagnose 0x49 行，只读）
+    // 与实测 awk 命令一致：bcdDevice = byte[10]:byte[9]，PID = byte[13]:byte[12]。
+    // 仅识别 Apple A2363（VID 05ac / PID 4078），避免把其他端口状态当作线缆版本。
+    static func bcdFromLine(_ bytes: [UInt8]) -> (String, String)? {
+        guard bytes.count >= 14, bytes[0] != 0,
+              bytes[1] == 0xac, bytes[2] == 0x05,
+              bytes[12] == 0x78, bytes[13] == 0x40 else { return nil }
+        let low = bytes[9], high = bytes[10]
+        guard high >> 4 > 0,
+              [high >> 4, high & 0xf, low >> 4, low & 0xf].allSatisfy({ $0 <= 9 }) else { return nil }
+        let patch = Int(low >> 4) * 10 + Int(low & 0xf)
+        return ("\(high >> 4).\(high & 0xf).\(patch)", String(format: "%02x%02x", high, low))
+    }
+
+    /// 所有已识别的 A2363 线缆版本；未连接、格式异常或未知设备返回空数组。
     static func cableFirmware() -> [FwSource] {
+        guard isCableConnected() else { return [] }
         let task = Process()
         task.launchPath = "/usr/bin/hpmdiagnose"
         let pipe = Pipe()
         task.standardOutput = pipe
-        task.standardError = Pipe()
+        task.standardError = FileHandle.nullDevice
         do { try task.run() } catch { return [] }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
-        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        guard task.terminationStatus == 0,
+              let text = String(data: data, encoding: .utf8) else { return [] }
+        return cableFirmware(from: text, connected: isCableConnected())
+    }
 
+    static func cableFirmware(from text: String, connected: Bool = true) -> [FwSource] {
+        guard connected else { return [] }
         var out: [FwSource] = []
-        var addr = ""
+        var port = ""
         for line in text.split(separator: "\n") {
-            if line.hasPrefix("HPM") {
-                if let r = line.range(of: "Address 0x") {
-                    addr = String(line[r.upperBound...].prefix(2))
-                }
+            if line.hasPrefix("HPM at ") {
+                port = String(line)
                 continue
             }
-            let parts = line.split(separator: "\t", omittingEmptySubsequences: true)
-            guard parts.count >= 3, parts[0].hasPrefix("0x") else { continue }
-            guard Int(parts[0].dropFirst(2), radix: 16) == 0x49 else { continue }
-            var hex = String(parts[2])
-            if hex.hasPrefix("0x") { hex = String(hex.dropFirst(2)) }
+            let parts = line.split(whereSeparator: { $0.isWhitespace })
+            guard !port.isEmpty, parts.count == 3, parts[0] == "0x49",
+                  parts[1].hasPrefix("0x"), let length = Int(parts[1].dropFirst(2), radix: 16),
+                  parts[2].hasPrefix("0x") else { continue }
+            let hex = Array(parts[2].dropFirst(2))
+            guard length >= 14, hex.count == length * 2 else { continue }
             var bytes = [UInt8]()
-            var i = hex.startIndex
-            while i < hex.endIndex {
-                let j = hex.index(i, offsetBy: 2, limitedBy: hex.endIndex) ?? hex.endIndex
-                if let b = UInt8(hex[i..<j], radix: 16) { bytes.append(b) }
-                i = j
+            for i in stride(from: 0, to: hex.count, by: 2) {
+                guard let b = UInt8(String(hex[i...i+1]), radix: 16) else { break }
+                bytes.append(b)
             }
-            guard bytes.contains(where: { $0 != 0 }) else { continue }  // 被动设备
-            // 0x49 非 0 但社区偏移处非合法 BCD → 端口状态块（非智能线缆），跳过
-            guard let (v, bcdHex) = bcdFromLine(bytes) else { continue }
-            var extras = ["hpmdiagnose 0x49 行（HPM addr 0x\(addr)）",
-                          "bcdDevice 0x\(bcdHex)（偏移 8–10）"]
-            if bytes.count > 12 {
-                let pid = Int(bytes[11]) | Int(bytes[12]) << 8
-                if pid != 0 { extras.append(String(format: "PID 0x%04x", pid)) }
-            }
-            out.append(FwSource(channel: "CableFW", node: "MagSafe 3 线缆（HPM 0x\(addr)）",
-                                label: "bcdDevice", value: v, strength: 3,
-                                extra: extras.joined(separator: "  ")))
+            guard bytes.count == length, let (v, bcdHex) = bcdFromLine(bytes) else { continue }
+            out.append(FwSource(channel: "CableFW", node: "Apple A2363 MagSafe 3 线缆",
+                                label: "线缆固件版本", value: v, strength: 3,
+                                extra: "bcdDevice 0x\(bcdHex) · VID 0x05ac · PID 0x4078\n  \(port)"))
         }
         return out
     }
@@ -387,7 +386,6 @@ enum Fw {
             var extras = ["type=" + ptype]
             if let dv = driverVersion() { extras.append("driver " + dv) }
             extras.append(active ? "cable=已接入" : "cable=未接入")
-            if let known = knownPortFw[rawHex] { extras.append(known) }
             let src = FwSource(channel: "AppleHPM", node: desc, label: "FW Version",
                                value: "<" + rawHex + ">", strength: rank,
                                extra: extras.joined(separator: "  "))
@@ -446,12 +444,12 @@ enum Fw {
     // MARK: 展示选择
 
     /// 展示候选：
-    /// 1) AppleHPM “FW Version” 原始字节（ioreg 同款 <00633000> 格式，社区对照表注在 extra）；
-    /// 2) hpmdiagnose 0x49 线缆 bcd（注册表读不到时的交叉验证来源）；
+    /// 1) hpmdiagnose 0x49 中已识别 A2363 的 bcdDevice；
+    /// 2) AppleHPM “FW Version” 原始字节（不推断线缆固件版本）；
     /// 3) IOKit 兜底扫描（只认版本类属性，绝不把节点名/Description 当版本号 —— 旧版 bug）。
     static func iokitDisplay() -> FwSource? {
-        if let best = portFirmware() { return best }
         if let best = cableFirmware().first { return best }
+        if let best = portFirmware() { return best }
         let hits = sweep()
         func fwLike(_ h: FwSource) -> Bool {
             let l = h.label.lowercased()
