@@ -24,6 +24,12 @@
 //    Apple 未公布编码格式（M5 Studio 00 14 31 00 / M5 Pro 00 82 20 00 / M5 Air 00 02 31 00，
 //    同机各口恒同值）→ 展示原始字节，配社区对照表（00 63 30 00 曾被对应到 3.1.12）。
 // c) AppleHPM 驱动版本（Info.plist，如 3.4.4）—— 驱动自身版本，辅助参考。
+//
+// 2026-10-24 修复（用户反馈：“获取的固件版本是端口的固件版本，
+// 我是想获取 magsafe 数据线的固件版本”）：
+//   displayAll() 显示优先级 = ① 线缆固件 ② 电源口控制器固件 ③ 驱动版本。
+//   旧版把电源口固件排第一（同机各口恒同值、与线缆无关）→ “读到的是端口固件”。
+//   App 弹窗三行分列、各自注明含义，不再让两者混淆。
 
 import Foundation
 import IOKit
@@ -271,16 +277,11 @@ enum Fw {
     }
 
     // MARK: 电源口固件（AppleHPM 驱动，Apple Silicon 电源口管理，只读）
-    // “FW Version”（4 字节）= HPM 电源口控制器内部固件。Apple 未公布编码格式：
+    // “FW Version”（4 字节）= HPM 电源口控制器内部固件（机身侧）。Apple 未公布编码：
     // 实测 M5 Studio 00 14 31 00、M5 Pro 00 82 20 00、M5 Air 00 02 31 00，同机各口恒同值，
-    // 各家 M5 机器互不相同 → 不猜语义版本，展示原始字节 + 社区对照表。
-
-    /// 社区对照表（原始 hex → 已知含义）。来自 2026-10 MacRumors 讨论串：
-    /// 00 63 30 00 对应 MagSafe 3 线缆固件 3.1.12（旧版）；
-    /// 若值已变（苹果 3 月推送更新），线缆侧应为 3.2.0+ —— 以 hpmdiagnose 渠道为准。
-    static let knownPortFw: [String: String] = [
-        "00633000": "00 63 30 00（社区对照 = 线缆固件 3.1.12 旧版）",
-    ]
+    // 各家 M5 机器互不相同 → 不猜语义版本，展示原始字节。
+    // 2026-10-24：此值与所插线缆无关（社区曾把 00 63 30 00 对照到 3.1.12，系推测，已撤），
+    // 不再作为主显示，仅作次要行（见 displayAll）。
 
     /// AppleHPM.kext 驱动版本（语义化版本，如 3.4.4；读 Info.plist，不碰驱动）
     static func driverVersion() -> String? {
@@ -387,7 +388,7 @@ enum Fw {
             var extras = ["type=" + ptype]
             if let dv = driverVersion() { extras.append("driver " + dv) }
             extras.append(active ? "cable=已接入" : "cable=未接入")
-            if let known = knownPortFw[rawHex] { extras.append(known) }
+            extras.append("电源口控制器固件，与所插线缆无关")
             let src = FwSource(channel: "AppleHPM", node: desc, label: "FW Version",
                                value: "<" + rawHex + ">", strength: rank,
                                extra: extras.joined(separator: "  "))
@@ -435,37 +436,42 @@ enum Fw {
 
     /// 展示用标题前缀：线缆固件 > MagSafe 3 口 > 普通电源口
     static func kind(_ d: FwSource?) -> String {
-        guard let d = d else { return "未检测到" }
+        guard let d = d else { return "未知" }
         if d.channel == "CableFW" { return "线缆固件" }
-        if d.channel == "AppleHPM" {
-            return d.node.lowercased().contains("magsafe") ? "电源口固件(MagSafe 3)" : "电源口固件"
-        }
-        return d.channel == "SMC" ? "电源口固件(SMC)" : "电源口固件"
+        if d.channel == "AppleHPM" { return "电源口固件" }
+        if d.channel == "Driver" { return "驱动版本" }
+        return d.channel
     }
 
-    // MARK: 展示选择
+    // MARK: 展示选择（2026-10-24 修复：主显示改为线缆固件）
 
-    /// 展示候选：
-    /// 1) AppleHPM “FW Version” 原始字节（ioreg 同款 <00633000> 格式，社区对照表注在 extra）；
-    /// 2) hpmdiagnose 0x49 线缆 bcd（注册表读不到时的交叉验证来源）；
-    /// 3) IOKit 兜底扫描（只认版本类属性，绝不把节点名/Description 当版本号 —— 旧版 bug）。
-    static func iokitDisplay() -> FwSource? {
-        if let best = portFirmware() { return best }
-        if let best = cableFirmware().first { return best }
+    /// 所有可展示的固件来源，按优先级排列：
+    /// ① 线缆固件（hpmdiagnose 0x49 行 bcd）—— MagSafe 3 数据线里 USB 控制器的固件，用户主关心的；
+    /// ② 电源口控制器固件（AppleHPM “FW Version” 原始 4 字节）—— 机身侧内部固件，
+    ///    同机各口恒同值、与线缆无关，作为次要行列出；
+    /// ③ AppleHPM 驱动版本（Info.plist）—— 驱动自身版本，供参考。
+    /// 以上都不存在时才回退旧版逻辑（IOKit 兜底扫描 → SMC 候选表）。
+    static func displayAll() -> [FwSource] {
+        var out: [FwSource] = []
+        // ① 线缆固件（bcd 必须能解出合法版本；全 0 行/非法偏移已在 cableFirmware 内跳过）
+        out.append(contentsOf: cableFirmware())
+        // ② 电源口控制器固件（rank 最优者 = 当前已接入的口）
+        if let p = portFirmware() { out.append(p) }
+        // ③ 驱动版本
+        if let dv = driverVersion() {
+            out.append(FwSource(channel: "Driver", node: "AppleHPM.kext",
+                                label: "CFBundleShortVersionString", value: dv, strength: 0))
+        }
+        if !out.isEmpty { return out }
+        // 兜底（旧版行为）：IOKit 扫描 → SMC 候选表
         let hits = sweep()
         func fwLike(_ h: FwSource) -> Bool {
             let l = h.label.lowercased()
             return ["firmware", "fw", "version", "rev"].contains(where: { l.contains($0) })
         }
-        if let best = hits.first(where: { $0.strength == 2 && fwLike($0) }) { return best }
-        if let best = hits.first(where: fwLike) { return best }
-        return nil
-    }
-
-    static func display() -> FwSource? {
-        if let d = iokitDisplay() { return d }
-        // IOKit 侧没有 → 用 SMC 候选表兜底：只展示名字真正像固件/线缆的键
-        guard let client = try? SMC.Client() else { return nil }
+        if let best = hits.first(where: { $0.strength == 2 && fwLike($0) }) { return [best] }
+        if let best = hits.first(where: fwLike) { return [best] }
+        guard let client = try? SMC.Client() else { return [] }
         let keys = (try? allSMCKeys(client)) ?? []
         for k in keys {
             let n = k.name.lowercased()
@@ -474,8 +480,12 @@ enum Fw {
             // 全 0 的值不展示（未接线时的默认态）
             let bytes = v.split(separator: " ").map(String.init)
             guard bytes.allSatisfy({ $0 == "00" || $0.hasPrefix("0x00") }) == false || k.size == 1 else { continue }
-            return FwSource(channel: "SMC", node: k.name, label: "raw(\(k.size)B \(k.type))", value: v, strength: 1)
+            return [FwSource(channel: "SMC", node: k.name, label: "raw(\(k.size)B \(k.type))", value: v, strength: 1)]
         }
-        return nil
+        return []
     }
+
+    /// 单一显示值 = 列表第一个（线缆固件优先；未插智能线缆时 = 电源口固件，与旧版同值）。
+    /// probe / ledctl / App 菜单标题共用。
+    static func display() -> FwSource? { displayAll().first }
 }

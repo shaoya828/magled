@@ -111,13 +111,13 @@ if mode == "default" {
     if hits.isEmpty {
         print("  (no magsafe/usb-related firmware or identity properties found)")
     }
-    if let d = Fw.display() {
-        print("display: [\((Fw.kind(d)))] \(d.text)")
-        if d.channel == "AppleHPM" {
-            print("ioreg format: \"FW Version\" = " + d.value)
-        }
+    let disp = Fw.displayAll()
+    if disp.isEmpty {
+        print("display: (no firmware version info found on this machine)")
     } else {
-        print("display: (none — no firmware version exposed on this machine)")
+        for (i, d) in disp.enumerated() {
+            print("display\(i == 0 ? " (main)" : ""): [\(Fw.kind(d))] \(d.text)")
+        }
     }
 
     print("\n=== SMC cable/port/LED-related keys ===")

@@ -139,13 +139,13 @@ if cmd == "fw" {
     let hits = Fw.sweep()
     print("IOKit hits: \(hits.count)")
     for h in hits { print("  " + h.line) }
-    if let d = Fw.display() {
-        print("display: [\(Fw.kind(d))] \(d.text)")
-        if d.channel == "AppleHPM" {
-            print("ioreg format: \"FW Version\" = " + d.value)
-        }
+    let disp = Fw.displayAll()
+    if disp.isEmpty {
+        print("display: (no firmware version info found on this machine)")
     } else {
-        print("display: (未找到固件版本信息)")
+        for (i, d) in disp.enumerated() {
+            print("display\(i == 0 ? " (main)" : ""): [\(Fw.kind(d))] \(d.text)")
+        }
     }
     if let client = try? SMC.Client() {
         let related = Fw.cableRelatedKeys(try Fw.allSMCKeys(client))

@@ -24,6 +24,8 @@ fi
 INSTALL_DIR=/usr/local/lib/magled
 mkdir -p "$INSTALL_DIR" /var/run
 cp "$HELPER" "$INSTALL_DIR/magled-helper"
+# 剥离 quarantine 隔离标记（从 GitHub/网盘下载的应用包会带，launchd 执行被隔离的二进制会被 AMFI 杀掉）
+xattr -cr "$INSTALL_DIR/magled-helper" 2>/dev/null || true
 chmod 755 "$INSTALL_DIR/magled-helper"
 codesign -f -s - "$INSTALL_DIR/magled-helper" 2>/dev/null || true
 

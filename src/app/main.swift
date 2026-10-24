@@ -306,30 +306,52 @@ final class MagLEDController: NSObject, NSMenuDelegate {
     @objc func showFirmware() {
         itemFirmware.title = "固件: 读取中…"
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let d = Fw.display()
-            let kind = Fw.kind(d)
-            var detail: String
-            if let d = d {
-                detail = d.text
-                if d.channel == "AppleHPM" {
-                    detail += "\n\n说明: “FW Version”（ioreg 原始字节）= 电源口控制器固件，同机各口同值。"
-                    detail += "社区对照: <00633000> = MagSafe 3 线缆固件旧版 3.1.12；"
-                    detail += "出现其他值 = 苹果已推送线缆固件更新（3.2.0 或更新）。"
-                } else if d.channel == "CableFW" {
-                    detail += "\n\n说明: 系统 hpmdiagnose 0x49 行的线缆 USB 控制器 bcdDevice。"
-                } else {
-                    detail += "\n\n说明: SMC/IOKit 兜底渠道（原始值，未经厂商文档确认）。"
-                }
-            } else {
-                detail = "未找到固件版本信息。\n\n本机（\(Fw.hostMachine())）的电源口未暴露 FW Version 属性。"
+            // 2026-10-24 修复：三行分列 —— 线缆固件（主）/ 电源口固件 / 驱动版本，各自注明含义。
+            // 旧版只显示一个值（且优先显示电源口固件），用户误以为读到了线缆版本。
+            let all = Fw.displayAll()
+            let hasCable = Fw.cableFirmware().count > 0
+            var lines: [String] = []
+            if !hasCable, !all.isEmpty {
+                lines.append("线缆固件：未检测到")
+                lines.append("  （当前接入线缆的 0x49 行无版本数据 —— 可能是被动线缆或未插线；以下各行仅供参考）")
+                lines.append("")
             }
+            for (i, s) in all.enumerated() {
+                let star = (i == 0) ? "★ " : "  "
+                switch s.channel {
+                case "CableFW":
+                    lines.append("\(star)线缆固件（MagSafe 3 数据线）: \(s.value)")
+                    lines.append("  来源: HPM 诊断 0x49 行 bcdDevice —— 线缆内部 USB 控制器的固件版本")
+                    if let x = s.extra { lines.append("  \(x)") }
+                case "AppleHPM":
+                    lines.append("\(star)电源口固件: \(s.value)")
+                    lines.append("  来源: AppleHPM \"FW Version\" 原始 4 字节 —— 内置电源口内部固件，与所插线缆无关（同机各口恒同值）")
+                    if let x = s.extra { lines.append("  \(x)") }
+                case "Driver":
+                    lines.append("\(star)驱动版本: \(s.value)")
+                    lines.append("  来源: AppleHPM.kext Info.plist —— 驱动自身版本，仅供参考")
+                default:
+                    lines.append("\(star)\(s.text)")
+                }
+                lines.append("")
+            }
+            var detail: String
+            if lines.isEmpty {
+                detail = "未找到固件版本信息。\n\n本机（\(Fw.hostMachine())）的电源口未暴露任何 FW Version 属性。"
+            } else {
+                detail = lines.joined(separator: "\n").trimmingCharacters(in: .newlines)
+                if hasCable {
+                    detail += "\n\n★ 第一行是线缆的真实固件版本，其余各行仅供参考。"
+                }
+            }
+            let first = all.first
             DispatchQueue.main.async {
                 let alert = NSAlert()
                 alert.messageText = "MagSafe 3 固件信息"
                 alert.informativeText = detail
                 alert.addButton(withTitle: "好")
                 alert.runModal()
-                self?.itemFirmware.title = "\(kind): " + (d?.short ?? "未检测到")
+                self?.itemFirmware.title = first.map { "\(Fw.kind($0)): \($0.short)" } ?? "固件: 未检测到"
             }
         }
     }
