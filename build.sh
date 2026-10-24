@@ -10,7 +10,7 @@ echo "▶ 编译 probe（开发探测）"
 xcrun swiftc -O -o build/bin/probe src/SMC.swift src/Fw.swift src/main.swift
 
 echo "▶ 编译 ledctl（命令行工具）"
-xcrun swiftc -O -o build/bin/ledctl src/SMC.swift src/Sock.swift src/Fw.swift src/cli/main.swift
+xcrun swiftc -O -o build/bin/ledctl src/SMC.swift src/Sock.swift src/cli/main.swift
 
 echo "▶ 编译 magled-helper（root 守护）"
 xcrun swiftc -O -o build/bin/magled-helper src/SMC.swift src/Sock.swift src/helper/main.swift
@@ -21,7 +21,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 xcrun swiftc -O -target arm64-apple-macos13.0 \
     -framework AppKit -framework ServiceManagement \
     -o "$APP/Contents/MacOS/MagLED" \
-    src/SMC.swift src/Sock.swift src/Fw.swift src/app/LEDModeText.swift src/app/main.swift
+    src/SMC.swift src/Sock.swift src/app/LEDModeText.swift src/app/main.swift
 cp Info.plist "$APP/Contents/Info.plist"
 cp install.sh uninstall.sh "$APP/Contents/Resources/"
 cp build/bin/magled-helper "$APP/Contents/Resources/"

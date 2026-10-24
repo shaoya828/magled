@@ -98,7 +98,6 @@ if cmd == "help" || cmd == "--help" || cmd == "-h" {
       ledctl green | amber         强制常亮（03 / 04）
       ledctl blinkslow | blinkfast | blinkoff
       ledctl probe                 探测本机 SMC 密钥
-      ledctl fw                    探测 MagSafe 线缆/端口固件（只读）
       ledctl install               安装后台守护（需要管理员密码）
       ledctl uninstall             卸载后台守护（需要管理员密码）
     """)
@@ -114,49 +113,6 @@ if cmd == "probe" {
         } else {
             print("  \(key)  — 不存在")
         }
-    }
-    exit(0)
-}
-
-if cmd == "fw" {
-    // 电源口固件与 MagSafe 线缆/端口探测（只读，无需 root）
-    print("Firmware probe on \(hostInfo()):")
-    let ports = Fw.allPortFirmware()
-    if let dv = Fw.driverVersion() {
-        print("AppleHPM driver: \(dv)")
-    }
-    print("Power-port firmware (AppleHPM): \(ports.count)")
-    for p in ports { print("  " + p.line) }
-    if ports.isEmpty {
-        print("  (no AppleHPM power-port node exposes FW Version)")
-    }
-    let cables = Fw.cableFirmware()
-    print("Cable firmware (hpmdiagnose): \(cables.count)")
-    if cables.isEmpty {
-        print("  (未识别到 0x49 线缆版本数据 — 被动设备或端口状态块)")
-    }
-    for c in cables { print("  " + c.line) }
-    let hits = Fw.sweep()
-    print("IOKit hits: \(hits.count)")
-    for h in hits { print("  " + h.line) }
-    let disp = Fw.displayAll()
-    if disp.isEmpty {
-        print("display: (no firmware version info found on this machine)")
-    } else {
-        for (i, d) in disp.enumerated() {
-            print("display\(i == 0 ? " (main)" : ""): [\(Fw.kind(d))] \(d.text)")
-        }
-    }
-    if let client = try? SMC.Client() {
-        let related = Fw.cableRelatedKeys(try Fw.allSMCKeys(client))
-        print("SMC related keys: \(related.count)")
-        for k in related.sorted(by: { $0.name < $1.name }) {
-            let v = k.value.map { " val=0x\(String(format: "%02x", $0))" } ?? ""
-            let raw = k.raw.map { " raw=\($0)" } ?? ""
-            print("  \(k.name)  size=\(k.size) type=\(k.type)\(v)\(raw)")
-        }
-    } else {
-        print("SMC: 无法打开（无权限？）")
     }
     exit(0)
 }
