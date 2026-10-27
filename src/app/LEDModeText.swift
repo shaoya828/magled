@@ -2,6 +2,15 @@ import Foundation
 
 // LEDModeText — human-readable labels (shared by the app; the CLI has its own copy).
 enum LEDModeText {
+    static func colour(_ value: UInt8?) -> String {
+        switch value {
+        case 0x01: return "关闭"
+        case 0x03: return "绿色"
+        case 0x04: return "橙色"
+        default: return "未知"
+        }
+    }
+
     static func current(_ v: UInt8) -> String {
         switch v {
         case 0x00: return "跟随系统"

@@ -145,6 +145,7 @@ public enum SMC {
             var request = SMCParamStruct()
             request.key = try fourCC(key)
             request.data8 = kSMCReadKey
+            request.keyInfo.dataSize = 1
             let reply = try call(request)
             return reply.bytes.0
         }

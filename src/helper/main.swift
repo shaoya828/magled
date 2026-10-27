@@ -67,7 +67,8 @@ final class Helper {
             try sMC!.writeByte(SMC.magSafeLEDKey, v)
             Thread.sleep(forTimeInterval: 0.05)
             let back = (try? sMC!.readByte(SMC.magSafeLEDKey)) ?? 0xFF
-            if back != v {
+            // System mode releases control; firmware may immediately report its own colour.
+            if v != 0 && back != v {
                 log("helper: WARN write 0x\(String(v, radix: 16)) but read back 0x\(String(back, radix: 16))")
                 return false
             }
@@ -142,6 +143,8 @@ final class Helper {
         switch parts[0] {
         case "ping":
             return "OK 1.0"
+        case "mode":
+            return String(format: "OK %02x", persisted)
         case "get":
             if SMC.isLEDKeySupported(), let v = currentLED() {
                 return String(format: "OK %02x", v)
@@ -210,8 +213,6 @@ while !stopFlag {
             }
         }
     }
-    // allow signal handler to interrupt select
-    usleep(1_000_000)
 }
 
 log("helper: shutting down")
